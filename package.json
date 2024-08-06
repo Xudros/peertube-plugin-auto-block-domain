@@ -1,0 +1,23 @@
+{
+  "name": "peertube-plugin-auto-block-domain",
+  "version": "0.0.1",
+  "description": "Auto block domain import plugin for PeerTube",
+  "engine": {
+    "peertube": ">=2.2.0"
+  },
+  "keywords": [
+    "peertube",
+    "plugin"
+  ],
+  "homepage": "https://github.com/Xudros/peertube-plugin-auto-block-domain",
+  "author": "Xudros",
+  "bugs": "https://github.com/Xudros/peertube-plugin-auto-block-domain/issues",
+  "library": "./main.js",
+  "staticDirs": {},
+  "css": [],
+  "clientScripts": [],
+  "translations": {},
+  "dependencies": {
+    "simple-get": "^4.0.1"
+  }
+}
