@@ -1,133 +1,71 @@
-const simpleGet = require('simple-get')
+const { URL } = require('url');
 
-const store = {
-  urls: [],
-  checkIntervalSeconds: null,
-  alreadyAdded: new Set(),
-  alreadyRemoved: new Set(),
-  timeout: null
-}
-
-async function register ({
-  settingsManager,
-  storageManager,
-  peertubeHelpers,
-  registerSetting
-}) {
-  const { logger } = peertubeHelpers
-
-  registerSetting({
-    name: 'blocklist-urls',
-    label: 'Blocklist Base URLs (one per line)',
+async function register({ registerHook, registerSetting, settingsManager, moderation }) {
+  // Register a setting for allowed domains
+  await registerSetting({
+    name: 'allowedDomains',
     type: 'input-textarea',
-    private: true
-  })
+    default: 'youtube.com',
+    description: 'Comma-separated list of allowed domains (e.g., youtube.com,vimeo.com)',
+  });
 
-  registerSetting({
-    name: 'check-seconds-interval',
-    label: 'Blocklist check frequency (seconds)',
-    type: 'input',
-    private: true,
-    default: 3600 // 1 Hour
-  })
+  // Hook to filter video imports based on the accept list
+  registerHook({
+    target: 'filter:api.video.pre-import-url.accept.result',
+    handler: async ({ input, result, helpers }) => {
+      try {
+        // Ensure input and input.video-import-targetUrl are defined
+        if (!input || !input['video-import-targetUrl']) {
+          console.error('Input or video-import-targetUrl is undefined', { input, result });
+          return { accepted: false, save: false };
+        }
 
-  const settings = await settingsManager.getSettings([ 'check-seconds-interval', 'blocklist-urls' ])
+        const allowedDomains = (await settingsManager.getSetting('allowedDomains')).split(',').map(d => d.trim());
+        const parsedUrl = new URL(input['video-import-targetUrl']);
+        const domain = parsedUrl.hostname.replace(/^www\./, '');
 
-  await load(peertubeHelpers, storageManager, settings['blocklist-urls'], settings['check-seconds-interval'])
+        // If the domain is not in the allowed list, reject the URL
+        if (!allowedDomains.includes(domain)) {
+          return {
+            accepted: false, // Do not accept for saving
+            save: false, // Ensure it's not saved
+          };
+        }
 
-  settingsManager.onSettingsChange(settings => {
-    load(peertubeHelpers, storageManager, settings['blocklist-urls'], settings['check-seconds-interval'])
-      .catch(err => logger.error('Cannot load auto block videos plugin.', { err }))
-  })
-}
-
-async function unregister () {
-  return
-}
-
-module.exports = {
-  register,
-  unregister
-}
-
-// ############################################################################
-
-async function load (peertubeHelpers, storageManager, blocklistUrls, checkIntervalSeconds) {
-  const { logger } = peertubeHelpers
-
-  if (store.timeout) clearTimeout(store.timeout)
-
-  store.checkIntervalSeconds = checkIntervalSeconds
-
-  store.urls = (blocklistUrls || '').split('\n')
-                                    .filter(url => !!url)
-
-  if (store.urls.length === 0) {
-    logger.info('Do not load auto block videos plugin because of empty blocklist URLs.')
-    return
-  }
-
-  logger.info('Loaded %d blocklist URLs for auto block videos plugin.', store.urls.length, { urls: store.urls })
-
-  runLater(peertubeHelpers, storageManager)
-}
-
-async function runCheck (peertubeHelpers, storageManager) {
-  const { logger } = peertubeHelpers
-
-  if (store.urls.length === 0) return runLater(peertubeHelpers, storageManager)
-
-  let lastChecks = await storageManager.getData('last-checks')
-  if (!lastChecks) lastChecks = {}
-
-  const newLastCheck = {}
-
-  for (const url of store.urls) {
-    try {
-      newLastCheck[url] = new Date().toISOString()
-      await blockVideosFromDomain(peertubeHelpers, url)
-    } catch (err) {
-      logger.warn('Cannot auto block videos from %s.', url, { err })
-    }
-  }
-
-  await storageManager.storeData('last-checks', newLastCheck)
-
-  runLater(peertubeHelpers, storageManager)
-}
-
-async function blockVideosFromDomain (peertubeHelpers, domain) {
-  const { moderation, videos, logger } = peertubeHelpers
-
-  logger.info('Blocking all videos from domain %s.', domain)
-
-  const allVideos = await videos.list({})
-  for (const video of allVideos.data) {
-    if (video.url.includes(new URL(domain).hostname)) {
-      if (store.alreadyAdded.has(video.url)) continue
-
-      store.alreadyRemoved.delete(video.url)
-      store.alreadyAdded.add(video.url)
-
-      if (video.remote !== true) {
-        logger.info('Do not auto block our own video %s.', video.url)
-        continue
+        // Domain is allowed, proceed with saving the video
+        return { accepted: true, save: true };
+      } catch (error) {
+        console.error('Error in filter:api.video.pre-import-url.accept.result hook:', error);
+        return { accepted: false, save: false };
       }
-
-      logger.info('Auto block video %s from blocklist domain %s.', video.url, domain)
-
-      const reason = 'Automatically blocked from auto block plugin due to blocked domain.'
-      await moderation.blacklistVideo({ videoIdOrUUID: video.id, createOptions: { reason } })
     }
+  });
+
+  // Check if 'action:video-imported' hook is supported
+  try {
+    registerHook({
+      target: 'action:video-imported',
+      handler: async ({ video }) => {
+        try {
+          const allowedDomains = (await settingsManager.getSetting('allowedDomains')).split(',').map(d => d.trim());
+          const videoDomain = new URL(video.referenceUrl).hostname.replace(/^www\./, '');
+
+          if (!allowedDomains.includes(videoDomain)) {
+            // Block the video if it's from a disallowed domain
+            await moderation.blacklistVideo(video.uuid, { reason: 'Blocked due to non-accepted domain' });
+          }
+        } catch (error) {
+          console.error('Error processing imported video:', error);
+        }
+      }
+    });
+  } catch (error) {
+    console.warn('Warning: Could not register action:video-imported hook. The hook may not be supported.', error);
   }
 }
 
-function runLater (peertubeHelpers, storageManager) {
-  const { logger } = peertubeHelpers
-
-  logger.debug('Will run auto videos block check in %d seconds.', store.checkIntervalSeconds)
-
-  store.timeout = setTimeout(() => {
-    runCheck(peertubeHelpers, storageManager)
-  }, store.checkIntervalSeconds * 1000)
+async function unregister() {
+  // Cleanup logic if needed
 }
+
+module.exports = { register, unregister };
