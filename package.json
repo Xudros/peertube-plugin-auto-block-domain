@@ -1,6 +1,6 @@
 {
   "name": "peertube-plugin-auto-block-domain",
-  "version": "0.0.1",
+  "version": "1.0.6",
   "description": "Auto block domain import plugin for PeerTube",
   "engine": {
     "peertube": ">=2.2.0"
@@ -17,7 +17,5 @@
   "css": [],
   "clientScripts": [],
   "translations": {},
-  "dependencies": {
-    "simple-get": "^4.0.1"
-  }
+  "dependencies": {}
 }
