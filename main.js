@@ -1,4 +1,4 @@
-const FormData = require('form-data');
+//const FormData = require('form-data');
 
 async function register({
   registerHook,
